@@ -146,22 +146,28 @@ load_integrity_mapping_table(int fd, const char *real_blk_name, const char *meta
 	strcpy(tgt->target_type, "integrity");
 
 	// Write the intergity parameters at the end after dm_target_spec
-	integrity_params = (char *)(mapping_io + 1) + sizeof(struct dm_target_spec);
+	size_t params_off = sizeof(struct dm_ioctl) + sizeof(struct dm_target_spec);
+	integrity_params = (char *)mapping_io + params_off;
 
 	// Write parameter
 	// these parameters are used in [1] as well as by dmsetup when traced with strace
-	snprintf(integrity_params,
-		 DM_INTEGRITY_BUF_SIZE - sizeof(struct dm_ioctl) - sizeof(struct dm_target_spec),
-		 "%s 0 %d J %s", real_blk_name, INTEGRITY_TAG_SIZE, extra_params);
+	snprintf(integrity_params, DM_INTEGRITY_BUF_SIZE - params_off, "%s 0 %d J %s",
+		 real_blk_name, INTEGRITY_TAG_SIZE, extra_params);
 
 	mem_free0(extra_params);
 
-	// Set pointer behind parameter
-	integrity_params += strlen(integrity_params) + 1;
-	// Byte align the parameter
-	integrity_params = (char *)ALIGN((uintptr_t)integrity_params, 8);
-	// Set tgt->next right behind dm_target_spec
-	tgt->next = (unsigned int)(integrity_params - (char *)tgt);
+	/*
+	 * Set tgt->next to the 8 byte aligned offset right behind the parameters.
+	 * This is computed as an offset into the ioctl buffer: if the parameters
+	 * fill the buffer, aligning up a pointer behind them would leave it.
+	 */
+	size_t next_off = ALIGN(params_off + strlen(integrity_params) + 1, 8);
+	if (next_off > DM_INTEGRITY_BUF_SIZE) {
+		ERROR("Integrity mapping table parameters do not fit the ioctl buffer");
+		mem_free0(mapping_io);
+		return -1;
+	}
+	tgt->next = (unsigned int)(next_off - sizeof(struct dm_ioctl));
 
 	for (mapping_counter = 0; mapping_counter < TABLE_LOAD_RETRIES; mapping_counter++) {
 		ioctl_ret = dm_ioctl(fd, DM_TABLE_LOAD, mapping_io);
@@ -217,15 +223,24 @@ load_crypto_mapping_table(int fd, const char *real_blk_name, const char *master_
 	tgt->length = fs_size;
 	strcpy(tgt->target_type, "crypt");
 
-	crypt_params = (char *)(io + 1) + sizeof(struct dm_target_spec);
-	snprintf(crypt_params,
-		 DM_CRYPT_BUF_SIZE - sizeof(struct dm_ioctl) - sizeof(struct dm_target_spec),
-		 "%s %s 0 %s 0 %s", crypto_type, master_key_ascii, real_blk_name, extra_params);
+	size_t params_off = sizeof(struct dm_ioctl) + sizeof(struct dm_target_spec);
+	crypt_params = (char *)io + params_off;
+	snprintf(crypt_params, DM_CRYPT_BUF_SIZE - params_off, "%s %s 0 %s 0 %s", crypto_type,
+		 master_key_ascii, real_blk_name, extra_params);
 	mem_free0(extra_params);
 
-	crypt_params += strlen(crypt_params) + 1;
-	crypt_params = (char *)ALIGN((uintptr_t)crypt_params, 8); /* Align to an 8 byte boundary */
-	tgt->next = (unsigned int)(crypt_params - (char *)tgt);
+	/*
+	 * Set tgt->next to the 8 byte aligned offset right behind the parameters.
+	 * This is computed as an offset into the ioctl buffer: if the parameters
+	 * fill the buffer, aligning up a pointer behind them would leave it.
+	 */
+	size_t next_off = ALIGN(params_off + strlen(crypt_params) + 1, 8);
+	if (next_off > DM_CRYPT_BUF_SIZE) {
+		ERROR("Crypto mapping table parameters do not fit the ioctl buffer");
+		mem_free0(io);
+		return -1;
+	}
+	tgt->next = (unsigned int)(next_off - sizeof(struct dm_ioctl));
 
 	for (i = 0; i < TABLE_LOAD_RETRIES; i++) {
 		ioctl_ret = dm_ioctl(fd, DM_TABLE_LOAD, io);

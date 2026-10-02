@@ -78,7 +78,7 @@
 /******************************************************************************/
 static const char *cryptfs_crypto_type = NULL;
 
-static unsigned long
+static uint64_t
 get_provided_data_sectors(const char *real_blk_name);
 
 void
@@ -457,11 +457,12 @@ dm_control:
 	return NULL;
 }
 
-static unsigned long
+static uint64_t
 get_provided_data_sectors(const char *real_blk_name)
 {
 	int fd;
-	unsigned long provided_data_sectors = 0;
+	uint64_t provided_data_sectors = 0;
+	uint64_t sectors = 0;
 	/*
 	 * The magic field of the dm-integrity superblock. It holds "integrt" on a
 	 * valid superblock, but the bytes come from the (untrusted) on-disk image,
@@ -487,17 +488,28 @@ get_provided_data_sectors(const char *real_blk_name)
 	}
 
 	// 16 Bytes offset from start of superblock for provided_data_sectors
-	lseek(fd, 16, SEEK_SET);
-	bytes_read = read(fd, &provided_data_sectors, sizeof(provided_data_sectors));
-	DEBUG("Read bytes is: %d", bytes_read);
-
-	if (bytes_read != sizeof(provided_data_sectors) || provided_data_sectors == 0) {
-		ERROR("Cannot read provided_data_sectors from volume %s", real_blk_name);
+	if (lseek(fd, 16, SEEK_SET) == (off_t)-1) {
+		ERROR_ERRNO("Cannot seek to provided_data_sectors of volume %s", real_blk_name);
 		goto errout;
 	}
 
+	/*
+	 * provided_data_sectors is a 64 bit little-endian field. As elsewhere for
+	 * on-disk structures in this tree (see verity_sb_t), the little-endian
+	 * layout is taken to match the host byte order. Read it into a scratch
+	 * variable so that a short read cannot leave a partial value behind.
+	 */
+	bytes_read = read(fd, &sectors, sizeof(sectors));
+	DEBUG("Read bytes is: %d", bytes_read);
+
+	if (bytes_read != sizeof(sectors) || sectors == 0) {
+		ERROR("Cannot read provided_data_sectors from volume %s", real_blk_name);
+		goto errout;
+	}
+	provided_data_sectors = sectors;
+
 errout:
-	DEBUG("Returning: provided_data_sectors= %ld", provided_data_sectors);
+	DEBUG("Returning: provided_data_sectors= %" PRIu64, provided_data_sectors);
 	close(fd);
 	return provided_data_sectors;
 }

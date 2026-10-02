@@ -539,7 +539,8 @@ cryptfs_write_zeros(char *crypto_blkdev, size_t size)
 	IF_NULL_RETVAL(crypto_blkdev, -1);
 
 	if (!(zeros = calloc(1, ZERO_BUF_SIZE))) {
-		ERROR_ERRNO("Failed to allocate zero buffer with size %zd", size);
+		ERROR_ERRNO("Failed to allocate %zu byte zero buffer to format volume %s",
+			    (size_t)ZERO_BUF_SIZE, crypto_blkdev);
 		goto error;
 	}
 
@@ -551,7 +552,12 @@ cryptfs_write_zeros(char *crypto_blkdev, size_t size)
 	while (0 < (size - written)) {
 		towrite = MIN(size - written, ZERO_BUF_SIZE);
 
-		if (0 > (res = fd_write(fd, zeros, towrite))) {
+		/*
+		 * fd_write() reports a short count instead of an error if the
+		 * underlying write() stops making progress. Treat a count of zero as
+		 * a failure, too, as the loop would otherwise never terminate.
+		 */
+		if (0 >= (res = fd_write(fd, zeros, towrite))) {
 			ERROR("Failed to write: %zd bytes", towrite);
 			goto error;
 		}
